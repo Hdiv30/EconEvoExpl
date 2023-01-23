@@ -1,0 +1,108 @@
+reset;
+model model_ps.mod;
+data model.dat;
+
+option solver "/Applications/Artelys/knitro/knitroampl/knitroampl";
+option knitro_options 
+    "algorithm=1 bar_murule=5 hessopt=1 linsolver=4 multistart=1 ms_seed=20 ms_maxsolves=10 feastol=1e-10 bar_feasible=3 par_numthreads=3 ms_terminate=1";
+
+let noEvo := 0; ### Evo 0, noEvo 1. also change out.csv names
+# evo fast, noEvo very slow. noEvo first
+let {m in 1..M} freq_m[m]  := ( sum{s in 1..6} n_0[s, m]) / ( sum{s in 1..6, j in 1..M} n_0[s, j]);  # initial frequency of types --> fixed without evo
+
+param lm_default = 59.63489131;  # t0 value from calibration
+
+param disc_rate;
+read disc_rate  < ("disc_rate.csv");
+read T  < ("T.csv");
+let delta := 1 / (1 + disc_rate);
+param disc_rate_str = disc_rate*100;
+param p;
+read p  < ("p.csv");
+param p_str = p*1000;
+param t_ini;  # start
+param Tsave := T;
+
+read t_target < ("T_target.csv");
+read target_lm < ("target_lm.csv");
+
+param filename symbolic = "out_t150_81.csv";
+# param filenamen symbolic = "out_target0_n.csv";
+# param filenameh symbolic = "out_target0_h.csv";
+
+let smoother := 1;  
+let hyper := 1.18;
+let tau := 0; 
+
+param n_factorial := prod{j in 1..(M-1)} j;
+param k_factorial {k in 0..M-1} = prod{j in 1..k} j;
+param nmink_factorial {k in 0..M-1} = prod{j in 1..(M-1-k)} j;
+param n_over_k{k in 0..M-1} := n_factorial / (k_factorial[k] * nmink_factorial[k]);
+param binomial {m in 1..M};
+param mean_mat_length;
+param totalN;
+
+let {m in 1..M} binomial[m] := n_over_k[m-1] * p^(m-1) * (1-p)^((M-1)-(m-1));
+let {s in 1..6, m in 1..M} n_evoDistribution[s, m] := binomial[m] * n_size[s];    
+
+# for saving:
+let mean_mat_length := sum{m in 1..M} binomial[m] * l_m[m];
+
+
+# param factor = if p=0.6 then 93 else (if p=0.55 then 81 else (if p=0.5 then 71 else (if p=0.45 then 63 else if p=0.4 then 56 else (if p=0.35 then 50 else (if p=0.3 then 44.7 else (if p=0.325 then 47 else (if p=0.375 then 52.5 else (if p=0.425 then 59 else (if p=0.475 then 67 else (if p=0.525 then 76 else (if p=0.575 then 86.5 else 0)))))))))));
+param factor = 62.9;
+fix {s in 1..6, m in 1..M} n[0, s, m] := factor * n_evoDistribution[s, m];  
+
+# no:
+# yes:
+restore evo_target;
+restore population_dynamics;
+
+objective discounted_smoothed_surplus;
+
+param h_1000 {t in 0..1000, s in 1..6};
+read {t in 0..1000, s in 1..6} h_1000[t, s] < "./out_H0_h.csv";
+param n_1000 {t in 0..1000, s in 1..6, m in 1..10};
+read {t in 0..1000, s in 1..6, m in 1..10} n_1000[t, s, m] < "./out_H0_n.csv";
+
+# printf "noEvo\tdiscrate\tdelta\ttau\thyper\tT\tyear\tttarget\ttargetlm\tp\tmeanm\tH_B\trecruits\tssb\taccessible\tcosts\tsurplus\ttotalnumber\tn11\tn12\tn13\tn14\tn15\tn16\tn17\tn18\tn19\tn110\tn21\tn22\tn23\tn24\tn25\tn26\tn27\tn28\tn29\tn210\tn31\tn32\tn33\tn34\tn35\tn36\tn37\tn38\tn39\tn310\tn41\tn42\tn43\tn44\tn45\tn46\tn47\tn48\tn49\tn410\tn51\tn52\tn53\tn54\tn55\tn56\tn57\tn58\tn59\tn510\tn61\tn62\tn63\tn64\tn65\tn66\tn67\tn68\tn69\tn610\th11\th12\th13\th14\th15\th16\th17\th18\th19\th110\th21\th22\th23\th24\th25\th26\th27\th28\th29\th210\th31\th32\th33\th34\th35\th36\th37\th38\th39\th310\th41\th42\th43\th44\th45\th46\th47\th48\th49\th410\th51\th52\th53\th54\th55\th56\th57\th58\th59\th510\th61\th62\th63\th64\th65\th66\th67\th68\th69\th610\n">(filename);
+
+# initialise:
+let {t in 1..T, s in 1..6, m in 1..10} n[t, s, m] := n_1000[t, s, m];
+# fix {t in 0..T, s in 1..6} h_s[t, s] :=  0; # for H) no harvesting scenario
+let {t in 0..T, s in 1..6} h_s[t, s] :=  h_1000[t, s];
+
+solve;
+
+if (solve_result_num = 0) then
+{
+    for {t in 0..Tsave}
+    {
+        printf "%d\t", noEvo >> (filename);
+        printf "%f\t", disc_rate >> (filename);
+        printf "%f\t", delta >> (filename);
+        printf "%f\t", tau >> (filename);
+        printf "%f\t", hyper >> (filename);
+        printf "%f\t", 1 >> (filename);  # one round, no iterate
+        printf "%d\t", t_ini+t >> (filename);
+        # printf "%d\t", t >> (filename);
+        printf "%d\t", t_target >> (filename);
+        printf "%f\t", target_lm >> (filename);
+        printf "%f\t", p >> (filename);
+        printf "%f\t", mean_lm[t] >> (filename);
+        printf "%f\t", H_B[t] >> (filename);
+        # printf {s in 1..6} "%f\t", h_s[t, s] >> (filenameh);
+        printf "%f\t", (sum{m in 1..M} recruits[t, m]) >> (filename);
+        printf "%f\t", ssb[t] >> (filename);  
+        printf "%f\t", A_B[t] >> (filename);  
+        printf "%f\t", costs[t] >> (filename);  
+        printf "%f\t", surplus[t] >> (filename);  
+        printf "%f\t", (sum{s in 1..6, m in 1..M} n[t, s, m]) >> (filename);  
+        printf {s in 1..6, m in 1..M} "%f\t", n[t, s, m] >> (filename);  
+        # printf {s in 1..6, m in 1..M} "%f\t", n[t, s, m] >> (filenamen);  
+        printf {s in 1..6, m in 1..M} "%f\t", h_sm[t, s, m] >> (filename);  
+        printf "\n" >> (filename);
+    }
+}
+# end solution if
+end

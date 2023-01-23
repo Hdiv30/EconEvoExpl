@@ -1,0 +1,136 @@
+reset;
+model model_ps.mod;
+data model.dat;
+
+let smoother := 1;  
+
+option solver "/Applications/Artelys/knitro/knitroampl/knitroampl";
+option knitro_options 
+    "multistart=1 ms_seed=20 ms_maxsolves=3 par_numthreads=3 ms_terminate=1";
+
+let noEvo := 0; # if set to 1 then evolution is off (artificially keep freq_m constant)
+let {m in 1..M} freq_m[m]  := ( sum{s in 1..6} n_0[s, m]) / ( sum{s in 1..6, j in 1..M} n_0[s, j]);  # initial frequency of types --> fixed without evo
+
+param disc_rate;
+read disc_rate  < ("disc_rate.csv");
+read T  < ("T.csv");
+let delta := 1 / (1 + disc_rate);
+param T_horizon := log(0.05) / log(delta);
+param disc_rate_str = disc_rate*100;
+param p;
+read p  < ("p.csv");
+param p_str = p*1000;
+param t_ini;  # start
+param Tsave := 0;
+var rounds := 35;
+
+param filename symbolic = "out_iterate_ps7.csv";
+
+let hyper := 1.18;
+let tau := 0; 
+
+# genotype distribution
+param n_factorial := prod{j in 1..(M-1)} j;
+param k_factorial {k in 0..M-1} = prod{j in 1..k} j;
+param nmink_factorial {k in 0..M-1} = prod{j in 1..(M-1-k)} j;
+param n_over_k{k in 0..M-1} := n_factorial / (k_factorial[k] * nmink_factorial[k]);
+param binomial {m in 1..M};
+param mean_mat_length;
+param totalN;
+
+let {m in 1..M} binomial[m] := n_over_k[m-1] * p^(m-1) * (1-p)^((M-1)-(m-1));
+let {s in 1..6, m in 1..M} n_evoDistribution[s, m] := binomial[m] * n_size[s];    
+
+# for saving:
+let mean_mat_length := sum{m in 1..M} binomial[m] * l_m[m];
+
+# factor so that ssb is as last dat point
+param factor = if p=0.625 then 100 else (if p=0.6 then 93 else (if p=0.55 then 81 else (if p=0.5 then 71 else (if p=0.45 then 63 else if p=0.4 then 56 else (if p=0.35 then 50 else (if p=0.3 then 44.7 else (if p=0.325 then 47 else (if p=0.375 then 52.5 else (if p=0.425 then 59 else (if p=0.475 then 67 else (if p=0.525 then 76 else (if p=0.575 then 86.5 else if p=0.2 then 36.65 else if p=0.225 then 38.5 else if p=0.25 then 40.5 else if p=0.275 then 42.5 else 0))))))))))));
+fix {s in 1..6, m in 1..M} n[0, s, m] := factor * n_evoDistribution[s, m];  # initial distribution
+display p;
+
+display noEvo;
+display disc_rate;
+display delta;
+display p;
+display T;
+display Tsave;
+display rounds;
+
+objective discounted_smoothed_surplus;
+
+# no:
+drop steady_state;
+drop steady_state_H;
+drop initial_population;
+drop initial_population_evoDistribution;  # see above (fix n_0)
+# yes:
+restore population_dynamics;
+
+
+
+printf {s in 1..6, m in 1..M} "%f\t", n[0, s, m] > ("./temp/last_n_discrate" & disc_rate_str & "_p" & p_str & ".csv");  
+printf "%d\t", 0 > ("./temp/t_discrate" & disc_rate_str & "_p" & p_str & ".csv");  
+
+
+# initialise (guess)
+param h_1000 {t in 0..1000, s in 1..6};
+read {t in 0..1000, s in 1..6} h_1000[t, s] < "./h_s_ini.csv";
+param n_1000 {t in 0..1000, s in 1..6, m in 1..10};
+read {t in 0..1000, s in 1..6, m in 1..10} n_1000[t, s, m] < "./n_sm_ini.csv";
+
+
+for {index in 0..rounds-1}  # iterate over rounds with initial state = last final state
+{ 
+
+
+    read t_ini < ("./temp/t_discrate" & disc_rate_str & "_p" & p_str & ".csv");
+
+    # initial condition of population
+    read {s in 1..6, m in 1..M} n[0, s, m] <("./temp/last_n_discrate" & disc_rate_str & "_p" & p_str & ".csv");
+    fix  {s in 1..6, m in 1..M} n[0, s, m];
+
+    # initialise:
+    let {t in 1..T, s in 1..6, m in 1..10} n[t, s, m] := if t_ini>50 then n_1000[50, s, m] else n_1000[t_ini+t, s, m];
+    let {t in 0..T, s in 1..6} h_s[t, s] := if t_ini>50 then h_1000[50, s] else h_1000[t_ini+t, s];
+    
+    display index;
+    display t_ini;
+    # display {s in 1..6, m in 1..M} n[0, s, m];
+    # display {s in 1..6, m in 1..M} n[1, s, m];
+    # display  {s in 1..6, t in 0..3} h_s[t,s];
+
+    solve;
+
+    # save next state:
+    printf {s in 1..6, m in 1..M} "%f\t", n[1, s, m] > ("./temp/last_n_discrate" & disc_rate_str & "_p" & p_str & ".csv");  
+    printf "%d\t", t_ini+1 > ("./temp/t_discrate" & disc_rate_str & "_p" & p_str & ".csv");  
+
+    if (solve_result_num = 0) then  # only save if optimisation successful
+    {
+            printf "%d\t", noEvo >> (filename);
+            printf "%f\t", disc_rate >> (filename);
+            printf "%f\t", delta >> (filename);
+            printf "%f\t", T_horizon >> (filename);
+            printf "%f\t", tau >> (filename);
+            printf "%f\t", hyper >> (filename);
+            printf "%f\t", rounds >> (filename);
+            printf "%d\t", t_ini >> (filename);
+            printf "%f\t", p >> (filename);
+            printf "%f\t", mean_mat_length >> (filename);
+            printf "%f\t", H_B[0] >> (filename);
+            # printf "%f\t", H_B[0] >> (filenameH);
+            printf "%f\t", (sum{m in 1..M} recruits[0, m]) >> (filename);
+            printf "%f\t", ssb[0] >> (filename);  
+            printf "%f\t", A_B[0] >> (filename);  
+            printf "%f\t", costs[0] >> (filename);  
+            printf "%f\t", surplus[0] >> (filename);  
+            printf "%f\t", (sum{s in 1..6, m in 1..M} n[0, s, m]) >> (filename);  
+            printf {s in 1..6, m in 1..M} "%f\t", n[0, s, m] >> (filename);  
+            # printf {s in 1..6, m in 1..M} "%f\t", n[0, s, m] >> (filenamen);  
+            printf {s in 1..6, m in 1..M} "%f\t", h_sm[0, s, m] >> (filename);  
+            printf "\n" >> (filename);
+    }
+    # end solution if
+} # end round loop
+end
